@@ -1,0 +1,404 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, doc, setDoc } from 'firebase/firestore';
+
+// Main App component for the chat application
+function App() {
+  // State variables for the application
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [isLoginView, setIsLoginView] = useState(true);
+  const [error, setError] = useState(null);
+  const [usersData, setUsersData] = useState({});
+  const [loading, setLoading] = useState(true);
+
+  // A ref to keep the chat scrolled to the bottom
+  const messagesEndRef = useRef(null);
+
+  // Function to scroll to the bottom of the chat window
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  // Effect hook for initializing Firebase and authentication
+  useEffect(() => {
+    // These variables are provided by the canvas environment.
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+    if (Object.keys(firebaseConfig).length === 0) {
+      setError("Firebase config is not provided.");
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const app = initializeApp(firebaseConfig);
+      const firestore = getFirestore(app);
+      const firebaseAuth = getAuth(app);
+      setDb(firestore);
+      setAuth(firebaseAuth);
+
+      // Listen for authentication state changes to manage the user state
+      const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+        if (user) {
+          // A user is signed in, set their ID and stop the loading state.
+          setUserId(user.uid);
+          setLoading(false);
+        } else {
+          // If no user is signed in, handle the initial authentication
+          try {
+            if (typeof __initial_auth_token !== 'undefined') {
+              // Sign in with the provided custom token
+              await signInWithCustomToken(firebaseAuth, __initial_auth_token);
+            } else {
+              // Fallback to anonymous sign-in if no token is available
+              await signInAnonymously(firebaseAuth);
+            }
+          } catch (error) {
+            console.error("Initial authentication error:", error);
+            setError("Authentication failed. Please try again.");
+            setLoading(false);
+          }
+        }
+      });
+
+      return () => unsubscribe(); // Cleanup the listener
+    } catch (err) {
+      console.error("Firebase initialization failed:", err);
+      setError("Firebase initialization failed. Check the console for details.");
+      setLoading(false);
+    }
+  }, []);
+
+  // Effect hook for fetching user data in real-time
+  useEffect(() => {
+    // This listener only attaches once the database instance is available.
+    if (db) {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const usersCollectionPath = `artifacts/${appId}/public/data/users`;
+      const usersCollection = collection(db, usersCollectionPath);
+
+      const unsubscribe = onSnapshot(usersCollection, (querySnapshot) => {
+        const fetchedUsers = {};
+        querySnapshot.forEach((doc) => {
+          fetchedUsers[doc.id] = doc.data().displayName;
+        });
+        setUsersData(fetchedUsers);
+      });
+
+      return () => unsubscribe();
+    }
+  }, [db]);
+
+  // Effect hook for fetching messages in real-time
+  useEffect(() => {
+    // This listener only attaches once both the database and user ID are available.
+    if (db && userId) {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const messagesCollectionPath = `artifacts/${appId}/public/data/chat_messages`;
+      const messagesCollection = collection(db, messagesCollectionPath);
+
+      const q = query(messagesCollection);
+
+      const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const fetchedMessages = [];
+        querySnapshot.forEach((doc) => {
+          fetchedMessages.push({ id: doc.id, ...doc.data() });
+        });
+        fetchedMessages.sort((a, b) => a.createdAt?.toMillis() - b.createdAt?.toMillis());
+        setMessages(fetchedMessages);
+        scrollToBottom();
+      });
+
+      return () => unsubscribe();
+    }
+  }, [db, userId]);
+
+  // Function to handle user registration
+  const handleRegister = async (e) => {
+    e.preventDefault();
+    if (!auth || !db || !displayName) {
+      setError("Please fill in all fields.");
+      return;
+    }
+    setError(null);
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      await setDoc(doc(db, `artifacts/${appId}/public/data/users`, user.uid), {
+        displayName: displayName,
+        email: email,
+      });
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Function to handle user login
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    if (!auth) {
+      setError("Authentication not initialized.");
+      return;
+    }
+    setError(null);
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Function to handle user logout
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setMessages([]);
+      setEmail('');
+      setPassword('');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Function to send a new message to Firestore
+  const sendMessage = async (e) => {
+    e.preventDefault();
+    if (newMessage.trim() === '' || !db || !userId) {
+      return;
+    }
+
+    try {
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const messagesCollectionPath = `artifacts/${appId}/public/data/chat_messages`;
+      
+      await addDoc(collection(db, messagesCollectionPath), {
+        text: newMessage,
+        userId: userId,
+        createdAt: serverTimestamp(),
+      });
+      setNewMessage('');
+    } catch (err) {
+      console.error("Error sending message:", err);
+    }
+  };
+
+  // Helper function to render a message
+  const renderMessage = (message) => {
+    const isLink = (text) => {
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      return urlRegex.test(text);
+    };
+
+    const formatTextWithLinks = (text) => {
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      const parts = text.split(urlRegex);
+      return parts.map((part, index) => {
+        if (isLink(part)) {
+          return (
+            <a key={index} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline">
+              {part}
+            </a>
+          );
+        }
+        return part;
+      });
+    };
+
+    const senderName = usersData[message.userId] || 'Unknown User';
+
+    return (
+      <div key={message.id} className="p-3 my-2 rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors duration-200">
+        <div className="flex items-center">
+          <span className="text-sm font-semibold text-gray-400 mr-2">
+            {userId === message.userId ? 'You' : senderName}
+          </span>
+          <span className="text-xs text-gray-500">
+            {message.createdAt?.toDate().toLocaleTimeString()}
+          </span>
+        </div>
+        <p className="mt-1 text-gray-100 break-words">{formatTextWithLinks(message.text)}</p>
+      </div>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-gray-200">
+        <div className="text-lg">Connecting to the chat...</div>
+      </div>
+    );
+  }
+
+  // Auth form component
+  const AuthForm = () => (
+    <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gray-900 text-gray-200 font-sans">
+      <style>{`
+        body {
+          margin: 0;
+          font-family: 'Inter', sans-serif;
+          background-color: #111827;
+        }
+      `}</style>
+      <div className="w-full max-w-md bg-gray-800 rounded-lg shadow-lg p-8">
+        <h2 className="text-2xl font-bold text-center mb-6">
+          {isLoginView ? 'Log In' : 'Sign Up'}
+        </h2>
+        {error && (
+          <div className="bg-red-900 text-red-300 p-3 rounded-md mb-4 text-center">
+            {error}
+          </div>
+        )}
+        <form onSubmit={isLoginView ? handleLogin : handleRegister} className="space-y-4">
+          {!isLoginView && (
+            <input
+              type="text"
+              placeholder="Display Name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              className="w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+          )}
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+          />
+          <button
+            type="submit"
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-lg transition-colors duration-200"
+          >
+            {isLoginView ? 'Log In' : 'Sign Up'}
+          </button>
+        </form>
+        <button
+          onClick={() => setIsLoginView(!isLoginView)}
+          className="w-full mt-4 text-sm text-blue-400 hover:underline"
+        >
+          {isLoginView ? 'Need an account? Sign Up' : 'Already have an account? Log In'}
+        </button>
+      </div>
+    </div>
+  );
+
+  // Main chat UI
+  const ChatUI = () => (
+    <div className="flex flex-col h-screen p-4 bg-gray-900 text-gray-200 font-sans">
+      <style>{`
+        body {
+          margin: 0;
+          font-family: 'Inter', sans-serif;
+          background-color: #111827;
+        }
+        .message-container {
+          display: flex;
+          flex-direction: column;
+          overflow-y: auto;
+          flex-grow: 1;
+          padding-bottom: 1rem;
+        }
+        .message-container::-webkit-scrollbar {
+          width: 8px;
+        }
+        .message-container::-webkit-scrollbar-thumb {
+          background-color: #4a5568;
+          border-radius: 4px;
+        }
+        .message-container::-webkit-scrollbar-track {
+          background-color: #2d3748;
+        }
+      `}</style>
+      
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-xl font-bold">Simple Chat</h1>
+        <button
+          onClick={handleLogout}
+          className="bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition-colors duration-200"
+        >
+          Logout
+        </button>
+      </div>
+      
+      {/* Voice chat and file sharing placeholders */}
+      <div className="mb-4 text-center">
+        {/* Voice Chat Stub */}
+        <div className="inline-block relative group">
+          <button
+            onClick={() => {}}
+            className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg transition-colors duration-200 mr-2"
+          >
+            Join Voice Chat
+          </button>
+          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-2 text-xs text-white bg-gray-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none w-max">
+            Requires a dedicated backend
+          </span>
+        </div>
+        {/* File Sharing Stub */}
+        <label className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-lg cursor-pointer transition-colors duration-200 inline-block relative group">
+          Share File
+          <input
+            type="file"
+            className="hidden"
+            onChange={() => {}}
+          />
+          <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 p-2 text-xs text-white bg-gray-800 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none w-max">
+            Requires a storage solution
+          </span>
+        </label>
+      </div>
+
+      {/* Main chat messages container */}
+      <div className="message-container border border-gray-700 rounded-lg p-4 mb-4">
+        {messages.length > 0 ? (
+          messages.map(renderMessage)
+        ) : (
+          <div className="text-center text-gray-500 italic">Start the conversation!</div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input form for new messages */}
+      <form onSubmit={sendMessage} className="flex space-x-2">
+        <input
+          type="text"
+          value={newMessage}
+          onChange={(e) => setNewMessage(e.target.value)}
+          placeholder="Type a message..."
+          className="flex-grow p-3 rounded-lg bg-gray-800 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          type="submit"
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200"
+        >
+          Send
+        </button>
+      </form>
+    </div>
+  );
+
+  // Render either the auth form or the chat UI based on login status
+  return userId ? <ChatUI /> : <AuthForm />;
+}
+
+export default App;
