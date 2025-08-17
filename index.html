@@ -178,7 +178,7 @@
 
             // Check if the username already exists in Firestore
             try {
-                const usersCollectionPath = `artifacts/${firebaseConfig.projectId}/public/data/users`;
+                const usersCollectionPath = `users`;
                 const usersQuery = query(collection(db, usersCollectionPath), where("displayName", "==", username));
                 const querySnapshot = await getDocs(usersQuery);
 
@@ -188,7 +188,6 @@
                 }
 
                 // If username is unique, proceed with creating the user
-                // We use a dummy email since Firebase Auth requires an email
                 const email = `${username}@temp.chat-app.com`;
                 const userCredential = await createUserWithEmailAndPassword(auth, email, password);
                 const user = userCredential.user;
@@ -241,7 +240,7 @@
                 return;
             }
             try {
-                const messagesCollectionPath = `artifacts/${firebaseConfig.projectId}/public/data/chat_messages`;
+                const messagesCollectionPath = `chat_messages`;
                 
                 await addDoc(collection(db, messagesCollectionPath), {
                     text: messageText,
@@ -307,34 +306,49 @@
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // Set up the real-time listeners for user data and messages
-                const usersCollectionPath = `artifacts/${firebaseConfig.projectId}/public/data/users`;
-                onSnapshot(collection(db, usersCollectionPath), (querySnapshot) => {
-                    const fetchedUsers = {};
-                    querySnapshot.forEach((doc) => {
-                        fetchedUsers[doc.id] = doc.data().displayName;
-                    });
-                    usersData = fetchedUsers;
-                });
-
-                const messagesCollectionPath = `artifacts/${firebaseConfig.projectId}/public/data/chat_messages`;
-                onSnapshot(collection(db, messagesCollectionPath), (querySnapshot) => {
-                    const fetchedMessages = [];
-                    querySnapshot.forEach((doc) => {
-                        fetchedMessages.push({ id: doc.id, ...doc.data() });
-                    });
-                    fetchedMessages.sort((a, b) => a.createdAt?.toMillis() - b.createdAt?.toMillis());
-                    renderMessages(fetchedMessages);
-                });
+                // Initialize a variable to hold the unsubscribe function for listeners
+                let unsubscribeListeners = null;
 
                 // Listen for auth state changes to toggle UI
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
                         showUI(true);
+
+                        // Attach listeners ONLY when a user is authenticated
+                        const usersCollectionPath = `users`;
+                        const unsubscribeUsers = onSnapshot(collection(db, usersCollectionPath), (querySnapshot) => {
+                            const fetchedUsers = {};
+                            querySnapshot.forEach((doc) => {
+                                fetchedUsers[doc.id] = doc.data().displayName;
+                            });
+                            usersData = fetchedUsers;
+                        });
+
+                        const messagesCollectionPath = `chat_messages`;
+                        const unsubscribeMessages = onSnapshot(collection(db, messagesCollectionPath), (querySnapshot) => {
+                            const fetchedMessages = [];
+                            querySnapshot.forEach((doc) => {
+                                fetchedMessages.push({ id: doc.id, ...doc.data() });
+                            });
+                            fetchedMessages.sort((a, b) => a.createdAt?.toMillis() - b.createdAt?.toMillis());
+                            renderMessages(fetchedMessages);
+                        });
+
+                        // Store the unsubscribe functions
+                        unsubscribeListeners = () => {
+                            unsubscribeUsers();
+                            unsubscribeMessages();
+                        };
+
                     } else {
                         userId = null;
                         showUI(false);
+                        // If user logs out, clear UI and detach listeners to prevent errors
+                        messagesContainer.innerHTML = `<div class="text-center text-gray-500 italic">Start the conversation!</div>`;
+                        if (unsubscribeListeners) {
+                            unsubscribeListeners();
+                        }
                     }
                 });
 
