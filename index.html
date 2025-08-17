@@ -46,9 +46,11 @@
             <h2 id="authTitle" class="text-2xl font-bold text-center mb-6">Log In</h2>
             <div id="authError" class="hidden bg-red-900 text-red-300 p-3 rounded-md mb-4 text-center"></div>
             <form id="authFormElement" class="space-y-4">
-                <input type="text" id="displayNameInput" placeholder="Display Name" class="hidden w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                <input type="email" id="emailInput" placeholder="Email" class="w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                <!-- Username field -->
+                <input type="text" id="usernameInput" placeholder="Username" class="w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                <!-- Password field -->
                 <input type="password" id="passwordInput" placeholder="Password" class="w-full p-3 rounded-lg bg-gray-700 text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                <!-- Login/Sign Up button -->
                 <button type="submit" id="authButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg shadow-lg transition-colors duration-200">Log In</button>
             </form>
             <button id="toggleAuthView" class="w-full mt-4 text-sm text-blue-400 hover:underline">Need an account? Sign Up</button>
@@ -99,7 +101,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, doc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, query, onSnapshot, serverTimestamp, doc, setDoc, where, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Your specific Firebase configuration
         const firebaseConfig = {
@@ -120,8 +122,7 @@
         const authButton = document.getElementById('authButton');
         const authError = document.getElementById('authError');
         const toggleAuthViewButton = document.getElementById('toggleAuthView');
-        const displayNameInput = document.getElementById('displayNameInput');
-        const emailInput = document.getElementById('emailInput');
+        const usernameInput = document.getElementById('usernameInput');
         const passwordInput = document.getElementById('passwordInput');
         const logoutButton = document.getElementById('logoutButton');
         const messagesContainer = document.getElementById('messagesContainer');
@@ -167,18 +168,38 @@
         const handleRegister = async (e) => {
             e.preventDefault();
             hideError();
-            if (!displayNameInput.value) {
-                showError("Please enter a display name.");
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            if (username === '') {
+                showError("Username cannot be empty.");
                 return;
             }
+
+            // Check if the username already exists in Firestore
             try {
-                const userCredential = await createUserWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+                const usersCollectionPath = `artifacts/${firebaseConfig.projectId}/public/data/users`;
+                const usersQuery = query(collection(db, usersCollectionPath), where("displayName", "==", username));
+                const querySnapshot = await getDocs(usersQuery);
+
+                if (!querySnapshot.empty) {
+                    showError("Username is already taken. Please choose a different one.");
+                    return;
+                }
+
+                // If username is unique, proceed with creating the user
+                // We use a dummy email since Firebase Auth requires an email
+                const email = `${username}@temp.chat-app.com`;
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
                 const user = userCredential.user;
-                await setDoc(doc(db, `artifacts/${firebaseConfig.projectId}/public/data/users`, user.uid), {
-                    displayName: displayNameInput.value,
-                    email: emailInput.value,
+
+                // Store the username in Firestore
+                await setDoc(doc(db, usersCollectionPath, user.uid), {
+                    displayName: username
                 });
+
             } catch (err) {
+                console.error("Registration error:", err);
                 showError(err.message);
             }
         };
@@ -187,10 +208,17 @@
         const handleLogin = async (e) => {
             e.preventDefault();
             hideError();
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value;
+
+            // Use the same dummy email logic for authentication
+            const email = `${username}@temp.chat-app.com`;
+
             try {
-                await signInWithEmailAndPassword(auth, emailInput.value, passwordInput.value);
+                await signInWithEmailAndPassword(auth, email, password);
             } catch (err) {
-                showError(err.message);
+                console.error("Login error:", err);
+                showError("Invalid username or password.");
             }
         };
 
@@ -321,8 +349,7 @@
             isLoginView = !isLoginView;
             authTitle.textContent = isLoginView ? 'Log In' : 'Sign Up';
             authButton.textContent = isLoginView ? 'Log In' : 'Sign Up';
-            displayNameInput.classList.toggle('hidden', isLoginView);
-            emailInput.value = '';
+            usernameInput.value = '';
             passwordInput.value = '';
             hideError();
         });
